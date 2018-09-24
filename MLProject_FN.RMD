@@ -1,0 +1,201 @@
+---
+title: "Practical Machine Learning - Prediction Assignment"
+author: "Jacques du Plessis"
+date: "23 September 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(knitr)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## Assignment
+
+The goal of the project is to predict the manner in which they did the exercise. This is the "classe" variable in the training set. 
+
+The  report describes:
+
+* How the data was prepared;
+* How the model was built;
+* The cross validation strategy employed;
+* The expected out of sample error. 
+
+
+## Background
+
+Six young health participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E).
+
+Class A corresponds to the specified execution of the exercise, while the other 4 classes correspond to common mistakes. Participants were supervised by an experienced weight lifter to make sure the execution complied to the manner they were supposed to simulate. The exercises were performed by six male participants aged between 20-28 years, with little weight lifting experience. We made sure that all participants could easily simulate the mistakes in a safe and controlled manner by using a relatively light dumbbell (1.25kg).
+
+See: <http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har>
+
+
+## Read the data
+
+```{r Read Testing Data,echo=TRUE,warning=FALSE}
+library(data.table) 
+
+## Read training file
+traifilename <- paste(getwd(),"/data/pml-training.csv",sep="")
+pmltraindf <-  fread(traifilename,na.strings=c("NA","N/A","null",""))
+
+## Read testing file
+testfilename <- paste(getwd(),"/data/pml-testing.csv",sep="")
+pmltestdf <-  fread(testfilename,na.strings=c("NA","N/A","null",""))
+
+## Remove variables 
+rm(traifilename)
+rm(testfilename)
+```
+
+
+## Exploratory Data Analysis
+
+The dataset contains `r nrow(pmltraindf)` and `r ncol(pmltraindf)` columns.  
+
+```{r Exploratory Data Analysis,echo=FALSE,include=FALSE}
+
+#head(pmltraindf[1:10,],5)
+#str(pmltraindf)
+#unique(pmltraindf$classe)
+```
+
+The first seven columns are not related to sensors data and should be removed before taining the model:
+
+```{r Remove columns,echo=TRUE}
+names(pmltraindf)[1:7]
+
+pmltraindf <- pmltraindf[,-c(1:7)]
+pmltestdf <- pmltestdf[,-c(1:7)]
+
+```
+
+## Data cleanup
+
+The dataset contains many NA & NaN values. The is.na() function will remove both.  
+
+```{r data clean-up,echo=TRUE}
+
+## Make NA equal to zero
+## Note that is.na will also pick up the NaN values
+pmltraindf[is.na(pmltraindf)] <- 0
+```
+
+There are many column with near zero values.  The nearZeroVar are used to trim the remaining columns    
+
+```{r Drop variables,echo=TRUE}
+library(caret)
+examinedf <- nearZeroVar(pmltraindf, saveMetrics=TRUE)
+drop <- row.names(examinedf[which(examinedf$nzv==TRUE),])
+pmltraindf <- as.data.frame(pmltraindf)
+pmltestdf <- as.data.frame(pmltestdf)
+##Drop columns with zeroVAR.  
+pmltraindf <- pmltraindf[ , !(names(pmltraindf) %in% drop)]
+pmltestdf <- pmltestdf[ , !(names(pmltestdf) %in% drop)]
+```
+
+
+## Machine Learning Model 
+
+The machine learning approach was based on these guiding principles:  
+
+ * Given the large set of predictors, I  decided to select a RandomForest approach 
+ * The caret package train function was used;
+ * with 10-fold cross validation;
+ * The testing set does not contain the classe. The Training Data was further split with a 60% training and 40% validation set ratio to provide a indication of out of sample error 
+ 
+
+```{r Build the machine learning model,echo=TRUE,warning=FALSE}
+
+pmltraindf$classe <- as.factor(pmltraindf$classe)
+set.seed(743)
+inTrain <- createDataPartition(pmltraindf$classe, p = 0.6)[[1]]
+trainingdf <- pmltraindf[ inTrain,]
+validationdf <- pmltraindf[-inTrain,]
+
+## Enable parallel processing
+library(parallel)
+library(doParallel)
+cluster <- makeCluster(detectCores()) 
+registerDoParallel(cluster)
+
+library(caret)
+train_control <- trainControl(method="cv", number=10,allowParallel = TRUE)
+set.seed(743)
+exectime <- system.time({
+    modelfit <- train(classe~., data=trainingdf, trControl=train_control, method="rf" )
+})    
+
+## Disable parallel processing
+stopCluster(cluster)
+registerDoSEQ()
+rm(cluster)
+```
+
+### Execution time
+
+Using parallel processing (with 8 cores), the model training time was: 
+
+```{r Report the time taken,echo=FALSE,include=TRUE}
+## Report the time taken
+exectime
+```
+
+### Model output 
+
+Here is the results of the model using 10-fold cross validation: 
+
+```{r Results of model,echo=FALSE}
+## Show the model output
+print(modelfit)
+
+```
+
+
+### Variable importance
+
+The following Varaibles Importance is assigned by the model:  
+
+```{r Variable Importance Plot,echo=FALSE}
+
+##Look at the Variable Importance
+Var_Importance <- varImp(modelfit)
+Var_Importance <-  as.data.frame(setorder(Var_Importance$importance,-Overall))
+Var_Importance <- cbind(row.names(Var_Importance),Var_Importance)
+names(Var_Importance) <- c("VariableName","Importance")
+g <- ggplot(data=Var_Importance,aes(x=reorder(VariableName,Importance),y=Importance)) 
+g <- g + geom_bar(stat="identity",fill="navy",alpha=0.6) 
+g <- g + coord_flip() 
+g <- g + theme(axis.text.y = element_text(size=rel(0.8)))
+g <- g + ylab("Variable importance")
+g <- g + xlab("Variables used in RandomForest")
+g
+rm(g)
+```
+
+Here is the Variable importance in text format:
+
+```{r Variable Importance in table format,echo=FALSE}
+Var_Importance
+```
+
+
+### Expected Out of sample error 
+
+To test the expected out of sample error, we will use the machine learning model to predict against the validation set we extracted earlier:
+
+```{r Out of sample error,echo=TRUE}
+## Test new model against validation set
+confusionMatrix(validationdf$classe,predict(modelfit,validationdf[,-53]))
+
+```
+
+
+
+***The end . . .***
+
+
+
+
